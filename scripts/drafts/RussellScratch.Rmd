@@ -1,0 +1,183 @@
+---
+title: "RussellLiu_Scratch"
+author: "Russell Liu"
+date: "2022-10-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Question 1: What do you imagine is the reason for log-transforming the protein levels in biomarker-raw.csv? 
+
+```{r}
+library(tidyverse)
+
+
+# get names
+var_names <- read_csv('data/biomarker-raw.csv', 
+                     col_names = F, 
+                     n_max = 2, 
+                     col_select = -(1:2)) %>%
+  t() %>%
+  as_tibble() %>%
+  rename(name = V1, 
+         abbreviation = V2) %>%
+  na.omit()
+
+# function for trimming outliers (good idea??)
+trim <- function(x, .at){
+  x[abs(x) > .at] <- sign(x[abs(x) > .at])*.at
+  return(x)
+}
+
+# read in data
+biomarker_clean <- read_csv('data/biomarker-raw.csv', 
+         skip = 2,
+         col_select = -2L,
+         col_names = c('group', 
+                       'empty',
+                       pull(var_names, abbreviation),
+                       'ados'),
+         na = c('-', '')) %>%
+  filter(!is.na(group)) %>%
+  # log transform, center and scale, and trim
+  mutate(across(.cols = -c(group, ados), 
+                ~ trim(scale(log10(.x))[, 1], .at = 3))) %>%
+  # reorder columns
+  select(group, ados, everything())
+```
+
+Scratch for log data: 
+```{r}
+ggplot(biomarker_clean) + geom_histogram(aes(x = CHIP),bins = 60)
+ggplot(biomarker_clean) + geom_histogram(aes(x = CEBPB),bins = 60)
+ggplot(biomarker_clean) + geom_histogram(aes(x = NSE),bins = 60)
+ggplot(biomarker_clean) + geom_histogram(aes(x = PIAS4),bins = 60)
+```
+
+```{r}
+biomarker_clean <- read_csv('data/biomarker-raw.csv', 
+         skip = 2,
+         col_select = -2L,
+         col_names = c('group', 
+                       'empty',
+                       pull(var_names, abbreviation),
+                       'ados'),
+         na = c('-', '')) %>%
+  filter(!is.na(group))
+```
+
+Scratch for raw data
+```{r}
+ggplot(biomarker_clean) + geom_histogram(aes(x = CHIP),bins = 60)
+ggplot(biomarker_clean) + geom_histogram(aes(x = CEBPB),bins = 60)
+ggplot(biomarker_clean) + geom_histogram(aes(x = NSE),bins = 60)
+ggplot(biomarker_clean) + geom_histogram(aes(x = PIAS4),bins = 60)
+```
+
+We can compare the processed data to the raw data. 
+We can clearly see processed data have the same scale of x-axis and y-axis. 
+By processing data in Log, x and  y axis don't have much difference in values so we can better view the  data relationship. 
+
+Question 3 part a and b
+```{r}
+library(tidyverse)
+library(infer)
+library(randomForest)
+library(tidymodels)
+library(modelr)
+library(yardstick)
+load('data/biomarker-clean.RData')
+
+```
+Split into training and testing sets at the beginning:
+```{r}
+set.seed(101422)
+biomarker_split <- biomarker_clean %>%
+  initial_split(prop = 0.7)
+```
+
+```{r}
+train_data<-training(biomarker_split)
+```
+
+```{r}
+test_fn <- function(.df){
+  t_test(.df, 
+         formula = level ~ group,
+         order = c('ASD', 'TD'),
+         alternative = 'two-sided',
+         var.equal = F)
+}
+
+ttests_out <- train_data %>%
+  select(-ados) %>%
+  pivot_longer(-group, 
+               names_to = 'protein', 
+               values_to = 'level') %>%
+  nest(data = c(level, group)) %>% 
+  mutate(ttest = map(data, test_fn)) %>%
+  unnest(ttest) %>%
+  arrange(p_value) %>%
+  mutate(m = n(),
+         hm = log(m) + 1/(2*m) - digamma(1),
+         rank = row_number(),
+         p.adj = m*hm*p_value/rank)
+```
+
+Choose a larger n=20
+```{r}
+proteins_s1 <- ttests_out %>%
+  slice_min(p.adj, n = 20) %>%
+  pull(protein)
+
+predictors <- train_data %>%
+  select(-c(group, ados))
+
+response <- train_data %>% pull(group) %>% factor()
+
+
+set.seed(101422)
+rf_out <- randomForest(x = predictors, 
+                       y = response, 
+                       ntree = 1000, 
+                       importance = T)
+
+rf_out$confusion
+
+```
+```{r}
+proteins_s1 <- ttests_out %>%
+  slice_min(p.adj, n = 30) %>%
+  pull(protein)
+
+predictors <- train_data %>%
+  select(-c(group, ados))
+
+response <- train_data %>% pull(group) %>% factor()
+
+
+set.seed(101422)
+rf_out <- randomForest(x = predictors, 
+                       y = response, 
+                       ntree = 1000, 
+                       importance = T)
+
+rf_out$confusion
+
+```
+
+We can see  that the number n doesn't matter. It won't affect the error. 
+```{r}
+# compute importance scores
+proteins_s2 <- rf_out$importance %>% 
+  as_tibble() %>%
+  mutate(protein = rownames(rf_out$importance)) %>%
+  slice_max(MeanDecreaseGini, n = 20) %>%
+  pull(protein)
+
+rf_out$importance
+```
+
+

@@ -1,0 +1,323 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Question 1: What do you imagine is the reason for log-transforming the protein levels in biomarker-raw.csv? (Hint: look at the distribution of raw values for a sample of proteins.)
+```{r}
+library(tidyverse)
+
+
+# get names
+var_names <- read_csv("/Users/shannon/Documents/PSTAT197/biomarkers-group-1/data/biomarker-raw.csv", 
+                     col_names = F, 
+                     n_max = 2, 
+                     col_select = -(1:2)) %>%
+  t() %>%
+  as_tibble() %>%
+  rename(name = V1, 
+         abbreviation = V2) %>%
+  na.omit()
+
+# function for trimming outliers (good idea??)
+trim <- function(x, .at){
+  x[abs(x) > .at] <- sign(x[abs(x) > .at])*.at
+  return(x)
+}
+
+# read in data
+biomarker_clean <- read_csv("/Users/shannon/Documents/PSTAT197/biomarkers-group-1/data/biomarker-raw.csv", 
+         skip = 2,
+         col_select = -2L,
+         col_names = c('group', 
+                       'empty',
+                       pull(var_names, abbreviation),
+                       'ados'),
+         na = c('-', '')) %>%
+  filter(!is.na(group)) %>%
+  # reorder columns
+  select(group, ados, everything())
+
+ggplot(biomarker_clean) + geom_histogram(aes(x = CHIP))
+ggplot(biomarker_clean) + geom_histogram(aes(x = CEBPB))
+ggplot(biomarker_clean) + geom_histogram(aes(x = NSE))
+ggplot(biomarker_clean) + geom_histogram(aes(x = PIAS4))
+```
+
+```{r}
+library(tidyverse)
+
+
+# get names
+var_names <- read_csv("/Users/shannon/Documents/PSTAT197/biomarkers-group-1/data/biomarker-raw.csv", 
+                     col_names = F, 
+                     n_max = 2, 
+                     col_select = -(1:2)) %>%
+  t() %>%
+  as_tibble() %>%
+  rename(name = V1, 
+         abbreviation = V2) %>%
+  na.omit()
+
+# function for trimming outliers (good idea??)
+trim <- function(x, .at){
+  x[abs(x) > .at] <- sign(x[abs(x) > .at])*.at
+  return(x)
+}
+
+# read in data
+biomarker_clean <- read_csv("/Users/shannon/Documents/PSTAT197/biomarkers-group-1/data/biomarker-raw.csv", 
+         skip = 2,
+         col_select = -2L,
+         col_names = c('group', 
+                       'empty',
+                       pull(var_names, abbreviation),
+                       'ados'),
+         na = c('-', '')) %>%
+  filter(!is.na(group)) %>%
+  # log transform, center and scale, and trim
+  mutate(across(.cols = -c(group, ados), 
+                ~ trim(scale(log10(.x))[, 1], .at = 3))) %>%
+  # reorder columns
+  select(group, ados, everything())
+
+ggplot(biomarker_clean) + geom_histogram(aes(x = CHIP))
+ggplot(biomarker_clean) + geom_histogram(aes(x = CEBPB))
+ggplot(biomarker_clean) + geom_histogram(aes(x = NSE))
+ggplot(biomarker_clean) + geom_histogram(aes(x = PIAS4))
+```
+
+We can see that the graphs in the second portion (with the log transformation) are more dispersed and normal looking. I believe that the log transformation is normalizing the data. We can also see that the x-axis for each of the transformed graphs has the same scale now. I think that this will make analysis of the data much more consistent and easier.
+
+Q4. 
+split data set BEFORE preforming tests. Carry out as normal with the TRAINING set.
+Choose a larger n
+fuzzy is including proteins in either of the three models, doesnt have to be in all 3
+
+I am doing part c
+```{r}
+library(tidyverse)
+library(infer)
+library(randomForest)
+library(tidymodels)
+library(modelr)
+library(yardstick)
+load('/Users/shannon/Documents/PSTAT197/biomarkers-group-1/data/biomarker-clean.RData')
+## MULTIPLE TESTING
+####################
+
+# function to compute tests
+test_fn <- function(.df){
+  t_test(.df, 
+         formula = level ~ group,
+         order = c('ASD', 'TD'),
+         alternative = 'two-sided',
+         var.equal = F)
+}
+
+ttests_out <- biomarker_clean %>%
+  # drop ADOS score
+  select(-ados) %>%
+  # arrange in long format
+  pivot_longer(-group, 
+               names_to = 'protein', 
+               values_to = 'level') %>%
+  # nest by protein
+  nest(data = c(level, group)) %>% 
+  # compute t tests
+  mutate(ttest = map(data, test_fn)) %>%
+  unnest(ttest) %>%
+  # sort by p-value
+  arrange(p_value) %>%
+  # multiple testing correction
+  mutate(m = n(),
+         hm = log(m) + 1/(2*m) - digamma(1),
+         rank = row_number(),
+         p.adj = m*hm*p_value/rank)
+
+# select significant proteins
+proteins_s1 <- ttests_out %>%
+  slice_min(p.adj, n = 10) %>%
+  pull(protein)
+
+## RANDOM FOREST
+##################
+
+# store predictors and response separately
+predictors <- biomarker_clean %>%
+  select(-c(group, ados))
+
+response <- biomarker_clean %>% pull(group) %>% factor()
+
+# fit RF
+set.seed(101422)
+rf_out <- randomForest(x = predictors, 
+                       y = response, 
+                       ntree = 1000, 
+                       importance = T)
+
+# check errors
+rf_out$confusion
+
+# compute importance scores
+proteins_s2 <- rf_out$importance %>% 
+  as_tibble() %>%
+  mutate(protein = rownames(rf_out$importance)) %>%
+  slice_max(MeanDecreaseGini, n = 10) %>%
+  pull(protein)
+
+## LOGISTIC REGRESSION
+#######################
+# select subset of interest
+proteins_sstar <- intersect(proteins_s1, proteins_s2)
+# This gives us 4 proteins: DERM, RELT, IgD, and FSTL1
+proteins_sstar
+
+biomarker_sstar <- biomarker_clean %>%
+  select(group, any_of(proteins_sstar)) %>%
+  mutate(class = (group == 'ASD')) %>%
+  select(-group)
+
+# partition into training and test set
+set.seed(101422)
+biomarker_split <- biomarker_sstar %>%
+  initial_split(prop = 0.8)
+
+# fit logistic regression model to training set
+fit <- glm(class ~ ., 
+           data = training(biomarker_split), 
+           family = 'binomial')
+
+# evaluate errors on test set
+class_metrics <- metric_set(sensitivity, 
+                            specificity, 
+                            accuracy,
+                            roc_auc)
+
+testing(biomarker_split) %>%
+  add_predictions(fit, type = 'response') %>%
+  class_metrics(estimate = factor(pred > 0.5),
+              truth = factor(class), pred,
+              event_level = 'second')
+```
+
+
+```{r}
+library(tidyverse)
+library(infer)
+library(randomForest)
+library(tidymodels)
+library(modelr)
+library(yardstick)
+library(BaseSet)
+load('/Users/shannon/Documents/PSTAT197/biomarkers-group-1/data/biomarker-clean.RData')
+## MULTIPLE TESTING
+####################
+
+# function to compute tests
+test_fn <- function(.df){
+  t_test(.df, 
+         formula = level ~ group,
+         order = c('ASD', 'TD'),
+         alternative = 'two-sided',
+         var.equal = F)
+}
+
+ttests_out <- biomarker_clean %>%
+  # drop ADOS score
+  select(-ados) %>%
+  # arrange in long format
+  pivot_longer(-group, 
+               names_to = 'protein', 
+               values_to = 'level') %>%
+  # nest by protein
+  nest(data = c(level, group)) %>% 
+  # compute t tests
+  mutate(ttest = map(data, test_fn)) %>%
+  unnest(ttest) %>%
+  # sort by p-value
+  arrange(p_value) %>%
+  # multiple testing correction
+  mutate(m = n(),
+         hm = log(m) + 1/(2*m) - digamma(1),
+         rank = row_number(),
+         p.adj = m*hm*p_value/rank)
+
+# select significant proteins
+proteins_s1 <- ttests_out %>%
+  slice_min(p.adj, n = 10) %>%
+  pull(protein)
+
+## RANDOM FOREST
+##################
+
+# store predictors and response separately
+predictors <- biomarker_clean %>%
+  select(-c(group, ados))
+
+response <- biomarker_clean %>% pull(group) %>% factor()
+
+# fit RF
+set.seed(101422)
+rf_out <- randomForest(x = predictors, 
+                       y = response, 
+                       ntree = 1000, 
+                       importance = T)
+
+# check errors
+rf_out$confusion
+
+# compute importance scores
+proteins_s2 <- rf_out$importance %>% 
+  as_tibble() %>%
+  mutate(protein = rownames(rf_out$importance)) %>%
+  slice_max(MeanDecreaseGini, n = 10) %>%
+  pull(protein)
+
+## LOGISTIC REGRESSION
+#######################
+
+set.seed(27)
+proteins <- data.frame(sets = c("proteins_s1", "proteins_s2"),
+                       elements = c(proteins_s1, proteins_s2),
+                       fuzzy = runif(2))
+fuzzy <- tidySet(proteins)
+proteins_sstar_f <- intersection(fuzzy, sets = c("proteins_s1", "proteins_s2"))
+# This gives us 4 proteins: DERM, RELT, IgD, and FSTL1
+
+proteins_sstar_f <- data.frame(proteins_sstar_f)
+proteins_sstar_f$elements
+
+biomarker_sstar_2 <- biomarker_clean %>%
+  select(group, any_of(proteins_sstar_f$elements)) %>%
+  mutate(class = (group == 'ASD')) %>%
+  select(-group)
+
+# partition into training and test set
+set.seed(101422)
+biomarker_split_2 <- biomarker_sstar_2 %>%
+  initial_split(prop = 0.8)
+
+# fit logistic regression model to training set
+fit_2 <- glm(class ~ ., 
+           data = training(biomarker_split_2), 
+           family = 'binomial')
+
+# evaluate errors on test set
+class_metrics <- metric_set(sensitivity, 
+                            specificity, 
+                            accuracy,
+                            roc_auc)
+
+testing(biomarker_split_2) %>%
+  add_predictions(fit_2, type = 'response') %>%
+  class_metrics(estimate = factor(pred > 0.5),
+              truth = factor(class), pred,
+              event_level = 'second')
+
+
+```
+Nothing changed when including a fuzzy intersection instead of a regular one.
+
+
+

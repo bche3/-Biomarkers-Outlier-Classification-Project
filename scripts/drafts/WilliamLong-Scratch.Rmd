@@ -1,0 +1,106 @@
+---
+title: "William_EDA"
+author: "William Long"
+date: "2022-10-23"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+```
+
+## Question 2: Temporarily remove the outlier trimming from preprocessing and do some exploratory analysis of outlying values. Are there specific subjects (not values) that seem to be outliers? If so, are outliers more frequent in one group or the other? (Hint: consider tabluating the number of outlying values per subject.)
+
+
+## Preprocessing
+
+```{r get_names}
+#setwd("C:/Users/longw/OneDrive/Desktop/biomarkers-group-1")
+setwd("C:/Users/19097/Desktop/New folder/biomarkers-group-1")
+var_names <- read_csv('data/biomarker-raw.csv', 
+                     col_names = F, 
+                     n_max = 2, 
+                     col_select = -(1:2)) %>%
+  t() %>%
+  as_tibble() %>%
+  rename(name = V1, 
+         abbreviation = V2) %>%
+  na.omit()
+
+#All protein names and their abbreviations
+```
+
+## Reading in primary data without trimming outliers
+```{r test}
+setwd("C:/Users/19097/Desktop/New folder/biomarkers-group-1")
+biomarker_transformed <- read_csv('data/biomarker-raw.csv', 
+         skip = 2,
+         col_select = -2L,
+         col_names = c('group', 
+                       'empty',
+                       pull(var_names, abbreviation),
+                       'ados'),
+         na = c('-', '')) %>%
+  filter(!is.na(group)) %>%
+  mutate(across(.cols = -c(group, ados), log10)) %>%
+  mutate(across(.cols = -c(group, ados), scale)) %>%
+      
+  select(group, ados, everything())
+```
+
+
+## Analyzing outliers
+```{r outliers}
+biomarker_transformed$outliers <- 0
+biomarker_transformed <- biomarker_transformed %>%
+  select(group, ados, outliers, everything())
+
+#Nested loop to count outliers
+#X = observation number
+#Y is variable index
+#Y starts at 4, because first 3 vars = (group, ados, outliers)
+for (x in 1:154) {
+  for (y in 4:1320) {
+    if (abs(biomarker_transformed[x,y]) > 3) {
+      biomarker_transformed[x,3] = biomarker_transformed[x,3] + 1
+    }  
+  }
+}
+
+```
+
+
+```{r outliers/group}
+
+#First try to identify if any particular subjects are outliers, in terms of having an extreme number of outlier protein values
+
+summary(biomarker_transformed$outliers)
+#Mean is 15.45, but median is only 8.5
+#Some subjects have such a high amount of extreme outlier variables that it is skewing our distribution.
+
+hist(biomarker_transformed$outliers, breaks = seq(0, 160, 10))
+#Vast majority of subjects do not have more than 20 outlier proteins in their blood sample
+
+#Knowing that, we'll set our arbitrary outlier value cutoff at 20. Any subject exceeding 20 protein outliers will be deemed an outlier subject. 
+
+biomarker_transformed$outlier.subject <- FALSE
+biomarker_transformed <- biomarker_transformed %>%
+  select(group, ados, outliers, outlier.subject, everything())
+
+biomarker_transformed <- biomarker_transformed %>%
+  mutate(outlier.subject = ifelse(outliers > 20, TRUE, FALSE))
+
+summary(biomarker_transformed$outlier.subject)
+#21 outlier subjects
+
+tapply(biomarker_transformed$outlier.subject, biomarker_transformed$group, summary)
+#A few more outliers in the TD group than the ASD group
+
+
+```
+
+
+
+

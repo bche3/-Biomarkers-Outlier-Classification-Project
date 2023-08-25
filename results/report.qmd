@@ -1,0 +1,401 @@
+---
+title: "Biomarkers of ASD"
+subtitle: "Module 1 Group Project"
+author: "Shannon Rumsey, Brian Che, William Long, Russell Liu"
+date: last-modified
+published-title: "Updated"
+editor: visual
+format: html
+code-copy: true
+execute:
+  message: false
+  warning: false
+  echo: false
+  cache: true
+---
+
+```{r, warning = FALSE}
+# load any other packages and read data here
+library(tidyverse)
+library(infer)
+library(randomForest)
+library(tidymodels)
+library(modelr)
+library(yardstick)
+library(dplyr)
+library(discrim)
+
+#Change working directory as needed, might need to replace with url 
+#setwd("C:/Users/brian/Documents/Github/biomarkers-group-1")
+#setwd("C:/Users/William/Desktop/PSTAT 197A/biomarkers-group-1")
+
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/labs/lab4-logistic/data/biomarker_clean.csv'
+
+#Reading in protein variable names
+var_names <- read_csv(url, 
+                     col_names = F, 
+                     n_max = 2, 
+                     col_select = -(1:2)) %>%
+  t() %>%
+  as_tibble() %>%
+  rename(name = V1, 
+         abbreviation = V2) %>%
+  na.omit()
+
+#For Question 2
+#Pre-processing data but keeping outliers
+biomarker_outliers <- read_csv('biomarker-raw.csv', 
+         skip = 2,
+         col_select = -2L,
+         col_names = c('group', 
+                       'empty',
+                       pull(var_names, abbreviation),
+                       'ados'),
+         na = c('-', '')) %>%
+  filter(!is.na(group)) %>%
+  mutate(across(.cols = -c(group, ados), log10)) %>%
+  mutate(across(.cols = -c(group, ados), scale)) %>%
+  select(group, ados, everything())
+
+```
+
+## Abstract
+
+In this report, we explored the importance of certain preprocessing steps, outliers, variations in experiment design, and an improved classifier. The experimentation regarding outliers and preprocessing involved removing the trimming of the dataset and exploring the effects of a log transformation on the raw data. Modifications in the experiment design included incorporating a fuzzy intersection, a change in location of the test-train split, and a larger number of proteins allowed for the panel. Metrics were evaluated to determine the new model's performance with each alteration. The final portion of the project consisted of determining a different method to achieve certain metric scores.
+
+## Dataset
+
+The data set used originated from a study that consisted of serum samples from 76 boys with diagnosed Autism Spectrum Disorder and 78 boys that are considered "typically developed". 1125 proteins from the serum were analyzed for each group. Demographics of the sample includes boys ranging in age from 18 months to 8 years old, majority white participants (\~45% in the ASD group and \~52% in the TD group), select commodities, and select medications. The goal of this study was to see if there were any proteins that could aid in future Autism Spectrum Disorder diagnoses. The data preprocessing for this experiment consisted mostly of outlier trimming and a log transformation of the data. The data was normalized with the use of a log transformation and a z transformation. After these transformations, any outliers outside of the range \[-3, 3\] were trimmed.
+
+## Summary of published analysis
+
+The methodology of the experiment consisted of 3 statistical methods. First, the serum underwent extraction to isolate the 1317 proteins. Of the 1317 proteins, only 1125 passed quality control and were able to undergo further investigation. The protein data was preprocessed and prepared for the three statistical models.
+
+The first model was a random forest which selected proteins with the highest feature importance using mean decrease in Gini Index. The model was trained 1000 times and the results were averaged. Ten proteins designated with the highest significance were noted. The second experiment was a t-test that tested whether there were any significant differences between means of the two groups. The ten proteins with the highest significance from this experiment were noted. The last experiment was a measure of correlation between each protein and the ADOS total score (a measure of the severity of ASD in a particular individual). Again, the ten with the highest correlations with the severity of ASD were noted.
+
+Following the statistical models, the intersection of all three groups of proteins resulting from the models were formed to create a panel. The remainder of the 3 groups were evaluated each at a time by calculating ROC curves and determining if each protein had a hand in improving the AUC score. Those that did were added into the model. In the end, the panel went from 5 to 9 significant proteins. Lastly, allergies, medications, race, and age were evaluated for significance. The resulting 9 proteins had an AUC of 0.860±0.064, sensitivity of 0.833±0.118, and specificity of 0.846±0.118.
+
+```{mermaid}
+flowchart LR
+  A[1317 proteins - 154 samples] --> B(1125 proteins pass quality control)
+  B--> C[Correlation Approach]
+  B --> D[Random Forest Approach]
+  B --> E[T-Test Approach]
+  C --> F{5 proteins in all 3 top 10}
+  D --> F{5 proteins in all 3 top 10}
+  E --> F{5 proteins in all 3 top 10}
+  F --> G[4 Proteins raise AUC]
+  G --> H{9 Proteins on Panel}
+  
+```
+
+## Findings
+
+### Impact of Preprocessing and Outliers
+
+```{r, warning = FALSE}
+# get names
+var_names <- read_csv("biomarker-raw.csv", 
+                      col_names = F, 
+                      n_max = 2, 
+                      col_select = -(1:2)) %>%
+  t() %>%
+  as_tibble() %>%
+  rename(name = V1, 
+         abbreviation = V2) %>%
+  na.omit()
+
+# function for trimming outliers (good idea??)
+trim <- function(x, .at){
+  x[abs(x) > .at] <- sign(x[abs(x) > .at])*.at
+  return(x)
+}
+
+# read in data
+biomarker_clean <- read_csv("biomarker-raw.csv", 
+                            skip = 2,
+                            col_select = -2L,
+                            col_names = c('group', 
+                                          'empty',
+                                          pull(var_names, abbreviation),
+                                          'ados'),
+                            na = c('-', '')) %>%
+  filter(!is.na(group)) %>%
+  # reorder columns
+  select(group, ados, everything())
+
+#make graphs without log transformation
+ggplot(biomarker_clean) + geom_histogram(aes(x = CHIP))
+ggplot(biomarker_clean) + geom_histogram(aes(x = CEBPB))
+ggplot(biomarker_clean) + geom_histogram(aes(x = NSE))
+ggplot(biomarker_clean) + geom_histogram(aes(x = PIAS4))
+
+```
+
+```{r}
+#Graph with log transformation
+biomarker_clean <- read_csv("biomarker-raw.csv", 
+                            skip = 2,
+                            col_select = -2L,
+                            col_names = c('group', 
+                                          'empty',
+                                          pull(var_names, abbreviation),
+                                          'ados'),
+                            na = c('-', '')) %>%
+  filter(!is.na(group)) %>%
+  # log transform, center and scale, and trim
+  mutate(across(.cols = -c(group, ados), 
+                ~ trim(scale(log10(.x))[, 1], .at = 3))) %>%
+  # reorder columns
+  select(group, ados, everything())
+
+ggplot(biomarker_clean) + geom_histogram(aes(x = CHIP))
+ggplot(biomarker_clean) + geom_histogram(aes(x = CEBPB))
+ggplot(biomarker_clean) + geom_histogram(aes(x = NSE))
+ggplot(biomarker_clean) + geom_histogram(aes(x = PIAS4))
+```
+
+After removing the log transformation from the experiment code and comparing it to the code with the log transformation, we can see that the one without log transformation is heavily skewed to the right and the one with log transformation is less skewed and more symmetric and more like normal distribution. The log transformation also rescales the data as well which will make analysis of the data much more consistent and simpler.
+
+Question 2:
+
+```{r tabulating outliers}
+#Adding variable to track number of outlying protein values per subject
+biomarker_outliers$outliers <- 0
+biomarker_outliers <- biomarker_outliers %>%
+  select(group, ados, outliers, everything())
+
+
+#Nested loop to count outliers
+#Execution takes a while, maybe more efficient method?
+#X = observation number
+#Y is variable index
+#Y starts at 4, because first 3 vars = (group, ados, outliers)
+#Condition for outlier is the same as specified in the original methodology 
+for (x in 1:154) {
+  for (y in 4:1320) {
+    if (abs(biomarker_outliers[x,y]) > 3) {
+      biomarker_outliers[x,3] = biomarker_outliers[x,3] + 1
+    }  
+  }
+}
+
+```
+
+After removing the outlier trimming from the original preprocessing code, we can see that there were hundreds of outlying values that were trimmed.
+
+```{r}
+#First try to identify if any particular subjects are outliers, in terms of having an extreme number of outlier protein values
+
+summary(biomarker_outliers$outliers)
+#Mean is 15.45, but median is only 8.5
+#Some subjects have such a high amount of extreme outlier variables that it is skewing our distribution.
+
+hist(biomarker_outliers$outliers, breaks = seq(0, 160, 10))
+#Vast majority of subjects do not have more than 20 outlier proteins in their blood sample
+
+#Knowing that, we'll set our arbitrary outlier value cutoff at 20. Any subject exceeding 20 protein outliers will be deemed an outlier subject. 
+
+#Adding new variable to classify subject as outlier or not
+biomarker_outliers$outlier.subject <- FALSE
+biomarker_outliers <- biomarker_outliers %>%
+  select(group, ados, outliers, outlier.subject, everything())
+
+biomarker_outliers <- biomarker_outliers %>%
+  mutate(outlier.subject = ifelse(outliers > 20, TRUE, FALSE))
+
+summary(biomarker_outliers$outlier.subject)
+#21 outlier subjects
+
+tapply(biomarker_outliers$outlier.subject, biomarker_outliers$group, summary)
+
+
+#A few more outliers in the TD group than the ASD group, but it doesn't seem statistically significant
+
+#Viewing outlier subjects
+outlier_subjects <- biomarker_outliers[biomarker_outliers$outlier.subject == TRUE,]
+
+outlier_subjects
+```
+
+From the above findings, we can see that there are indeed specific subjects that seem to be outliers, with some subjects having upwards of 100 outlying protein values identified in their blood samples. The TD group actually has a few more outlier subjects according to our criteria, but the difference seems unlikely to be statistically significant.
+
+Even among outlier subjects, there are some subjects that have an extreme number of outlying protein values in their blood sample(\>100). Unless these outliers were created because of an error in the original data collection techniques from the subjects' blood samples, it seems as if we're tossing away a lot of significant data. Because of this, it seems like trimming the data at cutoffs of \>3 and \<-3 would have major impacts on our predictive modeling. For generating our models for question 4, we ended up using this version of the dataset that retains the outlier values.
+
+### Methodological variations
+
+Question 3 Question 3 part a and b
+
+```{r}
+
+
+```
+
+Split into training and testing sets at the beginning:
+
+```{r}
+set.seed(101422)
+biomarker_split <- biomarker_clean %>%
+  initial_split(prop = 0.7)
+```
+
+```{r}
+train_data<-training(biomarker_split)
+```
+
+```{r}
+test_fn <- function(.df){
+  t_test(.df, 
+         formula = level ~ group,
+         order = c('ASD', 'TD'),
+         alternative = 'two-sided',
+         var.equal = F)
+}
+
+ttests_out <- train_data %>%
+  select(-ados) %>%
+  pivot_longer(-group, 
+               names_to = 'protein', 
+               values_to = 'level') %>%
+  nest(data = c(level, group)) %>% 
+  mutate(ttest = map(data, test_fn)) %>%
+  unnest(ttest) %>%
+  arrange(p_value) %>%
+  mutate(m = n(),
+         hm = log(m) + 1/(2*m) - digamma(1),
+         rank = row_number(),
+         p.adj = m*hm*p_value/rank)
+```
+
+Choose a larger n=20
+
+```{r}
+proteins_s1 <- ttests_out %>%
+  slice_min(p.adj, n = 20) %>%
+  pull(protein)
+
+predictors <- train_data %>%
+  select(-c(group, ados))
+
+response <- train_data %>% pull(group) %>% factor()
+
+
+set.seed(101422)
+rf_out <- randomForest(x = predictors, 
+                       y = response, 
+                       ntree = 1000, 
+                       importance = T)
+
+rf_out$confusion
+
+```
+
+Choose n = 30
+
+```{r}
+proteins_s1 <- ttests_out %>%
+  slice_min(p.adj, n = 30) %>%
+  pull(protein)
+
+predictors <- train_data %>%
+  select(-c(group, ados))
+
+response <- train_data %>% pull(group) %>% factor()
+
+
+set.seed(101422)
+rf_out <- randomForest(x = predictors, 
+                       y = response, 
+                       ntree = 1000, 
+                       importance = T)
+
+rf_out$confusion
+
+```
+
+We can see that the number n doesn't matter. It won't affect the error.
+
+```{r}
+# compute importance scores
+proteins_s2 <- rf_out$importance %>% 
+  as_tibble() %>%
+  mutate(protein = rownames(rf_out$importance)) %>%
+  slice_max(MeanDecreaseGini, n = 20) %>%
+  pull(protein)
+
+rf_out$importance
+```
+
+Regarding the change from a hard intersection to a fuzzy one, there was no difference on metrics or protein panel results.
+
+### Improved classifier
+
+We first select the 5 proteins used in Week 4's section activity code to classify within the biomarker dataset including outliers through an initial split of 80/200. The first method we applied for the purpose of a simpler panel that achieves a comparable classification accuracy to that of the in-class analysis was the linear discriminant analysis (LDA) model. We obtain an accuracy of 0.839 which is exactly similar to the inclass-analysis' logistic regression classification accuracy of 0.839. Our second method consisted of an alternative panel that achieved improved classification accuracy using Naive Bayes for which an accuracy of 0.935 was achieved, a roughly 10% increase from the in-class analysis.
+
+```{r}
+
+#### Select protein panels (We use the 5 proteins from the Week 4 Activity)
+
+s_star <- c("DERM", "RELT", "IgD", "PTN", "FSTL1")
+biomarker_clean <- biomarker_outliers %>%
+  select(group, any_of(s_star)) %>%
+  # convert group (chr) to binary (lgl)
+  mutate(class = (group == 'ASD')) %>%
+  select(-group)
+
+
+# split the data into training and testing sets
+
+set.seed(101422)
+biomarker_split <- initial_split(biomarker_clean, prop = 0.8)
+biomarker_train <- training(biomarker_split)
+biomarker_test <- testing(biomarker_split)
+
+# Convert the outcome variable "class" to factor from logical
+biomarker_train$class <- as.factor(biomarker_train$class)
+biomarker_test$class <- as.factor(biomarker_test$class)
+class(biomarker_train$class)
+class(biomarker_test$class)
+
+# creating recipe
+biomarker_recipe <- recipe(class ~ ., data = biomarker_train)
+
+lda_mod = discrim_linear() %>%
+  set_mode("classification") %>%
+  set_engine("MASS")
+
+lda_wkflow = workflow() %>%
+  add_model(lda_mod) %>%
+  add_recipe(biomarker_recipe)
+
+lda_fit = fit(lda_wkflow, biomarker_train)
+#### Fitting to test
+### Using LDA on testing set
+lda_fit_test <- fit(lda_wkflow, biomarker_test)
+
+predict(lda_fit_test, new_data = biomarker_test, type = "prob")
+
+augment(lda_fit_test, new_data = biomarker_test) %>%
+  conf_mat(truth = class, estimate = .pred_class) 
+
+multi_metric <- metric_set(accuracy, sensitivity, specificity)
+
+lda_acc_test <- augment(lda_fit_test, new_data = biomarker_test) %>%
+  multi_metric(truth = class, estimate = .pred_class)
+
+
+
+### Using Naive Bayes classification on testing set
+nb_fit_test <- fit(nb_wkflow, biomarker_test)
+
+predict(nb_fit_test, new_data = biomarker_test, type = "prob")
+
+multi_metric <- metric_set(accuracy, sensitivity, specificity)
+
+nb_acc_test <- augment(nb_fit_test, new_data = biomarker_test) %>%
+  multi_metric(truth = class, estimate = .pred_class)
+
+# Accuracy of two classification models
+lda_acc_test
+nb_acc_test
+```
